@@ -497,93 +497,13 @@ impl Global {
         }
 
         for command in base.commands {
-            match command {
-                ArcComputeCommand::SetBindGroup {
-                    index,
-                    num_dynamic_offsets,
-                    bind_group,
-                } => {
-                    let scope = PassErrorScope::SetBindGroup;
-                    state
-                        .set_bind_group(
-                            cmd_buf,
-                            &base.dynamic_offsets,
-                            index,
-                            num_dynamic_offsets,
-                            bind_group,
-                        )
-                        .map_pass_err(scope)?;
-                }
-                ArcComputeCommand::SetPipeline(pipeline) => {
-                    let scope = PassErrorScope::SetPipelineCompute;
-                    state.set_pipeline(cmd_buf, pipeline).map_pass_err(scope)?;
-                }
-                ArcComputeCommand::SetPushConstant {
-                    offset,
-                    size_bytes,
-                    values_offset,
-                } => {
-                    let scope = PassErrorScope::SetPushConstant;
-                    state
-                        .set_push_constant(
-                            &base.push_constant_data,
-                            offset,
-                            size_bytes,
-                            values_offset,
-                        )
-                        .map_pass_err(scope)?;
-                }
-                ArcComputeCommand::Dispatch(groups) => {
-                    let scope = PassErrorScope::Dispatch { indirect: false };
-                    state.dispatch(groups).map_pass_err(scope)?;
-                }
-                ArcComputeCommand::DispatchIndirect { buffer, offset } => {
-                    let scope = PassErrorScope::Dispatch { indirect: true };
-                    state
-                        .dispatch_indirect(cmd_buf, buffer, offset)
-                        .map_pass_err(scope)?;
-                }
-                ArcComputeCommand::PushDebugGroup { color: _, len } => {
-                    state.push_debug_group(&base.string_data, len);
-                }
-                ArcComputeCommand::PopDebugGroup => {
-                    let scope = PassErrorScope::PopDebugGroup;
-                    state.pop_debug_group().map_pass_err(scope)?;
-                }
-                ArcComputeCommand::InsertDebugMarker { color: _, len } => {
-                    state.insert_debug_marker(&base.string_data, len);
-                }
-                ArcComputeCommand::WriteTimestamp {
-                    query_set,
-                    query_index,
-                } => {
-                    let scope = PassErrorScope::WriteTimestamp;
-                    state
-                        .write_timestamp(cmd_buf, query_set, query_index)
-                        .map_pass_err(scope)?;
-                }
-                ArcComputeCommand::BeginPipelineStatisticsQuery {
-                    query_set,
-                    query_index,
-                } => {
-                    let scope = PassErrorScope::BeginPipelineStatisticsQuery;
-                    validate_and_begin_pipeline_statistics_query(
-                        query_set,
-                        state.raw_encoder,
-                        &mut state.tracker.query_sets,
-                        cmd_buf,
-                        query_index,
-                        None,
-                        &mut state.active_query,
-                    )
-                    .map_pass_err(scope)?;
-                }
-                ArcComputeCommand::EndPipelineStatisticsQuery => {
-                    let scope = PassErrorScope::EndPipelineStatisticsQuery;
-                    end_pipeline_statistics_query(state.raw_encoder, &mut state.active_query)
-                        .map_pass_err(scope)?;
-                }
-            }
+            state.execute_command(
+                cmd_buf,
+                command,
+                &base.dynamic_offsets,
+                &base.push_constant_data,
+                &base.string_data,
+            )?;
         }
 
         unsafe {
@@ -631,6 +551,95 @@ impl Global {
 impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
     State<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
 {
+    fn execute_command(
+        &mut self,
+        cmd_buf: &CommandBuffer,
+        command: ArcComputeCommand,
+        dynamic_offsets: &[DynamicOffset],
+        push_constant_data: &[u32],
+        string_data: &[u8],
+    ) -> Result<(), ComputePassError> {
+        match command {
+            ArcComputeCommand::SetBindGroup {
+                index,
+                num_dynamic_offsets,
+                bind_group,
+            } => {
+                let scope = PassErrorScope::SetBindGroup;
+                self.set_bind_group(
+                    cmd_buf,
+                    dynamic_offsets,
+                    index,
+                    num_dynamic_offsets,
+                    bind_group,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcComputeCommand::SetPipeline(pipeline) => {
+                let scope = PassErrorScope::SetPipelineCompute;
+                self.set_pipeline(cmd_buf, pipeline).map_pass_err(scope)?;
+            }
+            ArcComputeCommand::SetPushConstant {
+                offset,
+                size_bytes,
+                values_offset,
+            } => {
+                let scope = PassErrorScope::SetPushConstant;
+                self.set_push_constant(push_constant_data, offset, size_bytes, values_offset)
+                    .map_pass_err(scope)?;
+            }
+            ArcComputeCommand::Dispatch(groups) => {
+                let scope = PassErrorScope::Dispatch { indirect: false };
+                self.dispatch(groups).map_pass_err(scope)?;
+            }
+            ArcComputeCommand::DispatchIndirect { buffer, offset } => {
+                let scope = PassErrorScope::Dispatch { indirect: true };
+                self.dispatch_indirect(cmd_buf, buffer, offset)
+                    .map_pass_err(scope)?;
+            }
+            ArcComputeCommand::PushDebugGroup { color: _, len } => {
+                self.push_debug_group(string_data, len);
+            }
+            ArcComputeCommand::PopDebugGroup => {
+                let scope = PassErrorScope::PopDebugGroup;
+                self.pop_debug_group().map_pass_err(scope)?;
+            }
+            ArcComputeCommand::InsertDebugMarker { color: _, len } => {
+                self.insert_debug_marker(string_data, len);
+            }
+            ArcComputeCommand::WriteTimestamp {
+                query_set,
+                query_index,
+            } => {
+                let scope = PassErrorScope::WriteTimestamp;
+                self.write_timestamp(cmd_buf, query_set, query_index)
+                    .map_pass_err(scope)?;
+            }
+            ArcComputeCommand::BeginPipelineStatisticsQuery {
+                query_set,
+                query_index,
+            } => {
+                let scope = PassErrorScope::BeginPipelineStatisticsQuery;
+                validate_and_begin_pipeline_statistics_query(
+                    query_set,
+                    self.raw_encoder,
+                    &mut self.tracker.query_sets,
+                    cmd_buf,
+                    query_index,
+                    None,
+                    &mut self.active_query,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcComputeCommand::EndPipelineStatisticsQuery => {
+                let scope = PassErrorScope::EndPipelineStatisticsQuery;
+                end_pipeline_statistics_query(self.raw_encoder, &mut self.active_query)
+                    .map_pass_err(scope)?;
+            }
+        };
+        Ok(())
+    }
+
     fn set_bind_group(
         &mut self,
         cmd_buf: &CommandBuffer,

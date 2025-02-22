@@ -1698,244 +1698,15 @@ impl Global {
             };
 
             for command in base.commands {
-                match command {
-                    ArcRenderCommand::SetBindGroup {
-                        index,
-                        num_dynamic_offsets,
-                        bind_group,
-                    } => {
-                        let scope = PassErrorScope::SetBindGroup;
-                        state.set_bind_group(
-                            cmd_buf,
-                            &base.dynamic_offsets,
-                            index,
-                            num_dynamic_offsets,
-                            bind_group,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::SetPipeline(pipeline) => {
-                        let scope = PassErrorScope::SetPipelineRender;
-                        state.set_pipeline(cmd_buf, pipeline).map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::SetIndexBuffer {
-                        buffer,
-                        index_format,
-                        offset,
-                        size,
-                    } => {
-                        let scope = PassErrorScope::SetIndexBuffer;
-                        state.set_index_buffer(cmd_buf, buffer, index_format, offset, size)
-                            .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::SetVertexBuffer {
-                        slot,
-                        buffer,
-                        offset,
-                        size,
-                    } => {
-                        let scope = PassErrorScope::SetVertexBuffer;
-                        state.set_vertex_buffer(cmd_buf, slot, buffer, offset, size)
-                            .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::SetBlendConstant(ref color) => {
-                        state.set_blend_constant(color);
-                    }
-                    ArcRenderCommand::SetStencilReference(value) => {
-                        state.set_stencil_reference(value);
-                    }
-                    ArcRenderCommand::SetViewport {
-                        rect,
-                        depth_min,
-                        depth_max,
-                    } => {
-                        let scope = PassErrorScope::SetViewport;
-                        state.set_viewport(rect, depth_min, depth_max).map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::SetPushConstant {
-                        stages,
-                        offset,
-                        size_bytes,
-                        values_offset,
-                    } => {
-                        let scope = PassErrorScope::SetPushConstant;
-                        state.set_push_constant(
-                            &base.push_constant_data,
-                            stages,
-                            offset,
-                            size_bytes,
-                            values_offset,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::SetScissor(rect) => {
-                        let scope = PassErrorScope::SetScissorRect;
-                        state.set_scissor(rect).map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::Draw {
-                        vertex_count,
-                        instance_count,
-                        first_vertex,
-                        first_instance,
-                    } => {
-                        let scope = PassErrorScope::Draw {
-                            kind: DrawKind::Draw,
-                            indexed: false,
-                        };
-                        state.draw(
-                            vertex_count,
-                            instance_count,
-                            first_vertex,
-                            first_instance,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::DrawIndexed {
-                        index_count,
-                        instance_count,
-                        first_index,
-                        base_vertex,
-                        first_instance,
-                    } => {
-                        let scope = PassErrorScope::Draw {
-                            kind: DrawKind::Draw,
-                            indexed: true,
-                        };
-                        state.draw_indexed(
-                            index_count,
-                            instance_count,
-                            first_index,
-                            base_vertex,
-                            first_instance,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::DrawIndirect {
-                        buffer,
-                        offset,
-                        count,
-                        indexed,
-                    } => {
-                        let scope = PassErrorScope::Draw {
-                            kind: if count != 1 {
-                                DrawKind::MultiDrawIndirect
-                            } else {
-                                DrawKind::DrawIndirect
-                            },
-                            indexed,
-                        };
-                        state.multi_draw_indirect(cmd_buf, buffer, offset, count, indexed)
-                            .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::MultiDrawIndirectCount {
-                        buffer,
-                        offset,
-                        count_buffer,
-                        count_buffer_offset,
-                        max_count,
-                        indexed,
-                    } => {
-                        let scope = PassErrorScope::Draw {
-                            kind: DrawKind::MultiDrawIndirectCount,
-                            indexed,
-                        };
-                        state.multi_draw_indirect_count(
-                            cmd_buf,
-                            buffer,
-                            offset,
-                            count_buffer,
-                            count_buffer_offset,
-                            max_count,
-                            indexed,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::PushDebugGroup { color: _, len } => {
-                        state.push_debug_group(&base.string_data, len);
-                    }
-                    ArcRenderCommand::PopDebugGroup => {
-                        let scope = PassErrorScope::PopDebugGroup;
-                        state.pop_debug_group().map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::InsertDebugMarker { color: _, len } => {
-                        state.insert_debug_marker(&base.string_data, len);
-                    }
-                    ArcRenderCommand::WriteTimestamp {
-                        query_set,
-                        query_index,
-                    } => {
-                        let scope = PassErrorScope::WriteTimestamp;
-                        state.write_timestamp(
-                            cmd_buf,
-                            &mut cmd_buf_data.pending_query_resets,
-                            query_set,
-                            query_index,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::BeginOcclusionQuery { query_index } => {
-                        api_log!("RenderPass::begin_occlusion_query {query_index}");
-                        let scope = PassErrorScope::BeginOcclusionQuery;
-
-                        let query_set = pass
-                            .occlusion_query_set
-                            .clone()
-                            .ok_or(RenderPassErrorInner::MissingOcclusionQuerySet)
-                            .map_pass_err(scope)?;
-
-                        validate_and_begin_occlusion_query(
-                            query_set,
-                            state.raw_encoder,
-                            &mut state.tracker.query_sets,
-                            query_index,
-                            Some(&mut cmd_buf_data.pending_query_resets),
-                            &mut state.active_occlusion_query,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::EndOcclusionQuery => {
-                        api_log!("RenderPass::end_occlusion_query");
-                        let scope = PassErrorScope::EndOcclusionQuery;
-
-                        end_occlusion_query(state.raw_encoder, &mut state.active_occlusion_query)
-                            .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::BeginPipelineStatisticsQuery {
-                        query_set,
-                        query_index,
-                    } => {
-                        api_log!(
-                            "RenderPass::begin_pipeline_statistics_query {query_index} {}",
-                            query_set.error_ident()
-                        );
-                        let scope = PassErrorScope::BeginPipelineStatisticsQuery;
-
-                        validate_and_begin_pipeline_statistics_query(
-                            query_set,
-                            state.raw_encoder,
-                            &mut state.tracker.query_sets,
-                            cmd_buf.as_ref(),
-                            query_index,
-                            Some(&mut cmd_buf_data.pending_query_resets),
-                            &mut state.active_pipeline_statistics_query,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::EndPipelineStatisticsQuery => {
-                        api_log!("RenderPass::end_pipeline_statistics_query");
-                        let scope = PassErrorScope::EndPipelineStatisticsQuery;
-
-                        end_pipeline_statistics_query(
-                            state.raw_encoder,
-                            &mut state.active_pipeline_statistics_query,
-                        )
-                        .map_pass_err(scope)?;
-                    }
-                    ArcRenderCommand::ExecuteBundle(bundle) => {
-                        let scope = PassErrorScope::ExecuteBundle;
-                        state.execute_bundle(cmd_buf, bundle).map_pass_err(scope)?;
-                    }
-                }
+                state.execute_command(
+                    cmd_buf,
+                    command,
+                    &base.dynamic_offsets,
+                    &base.push_constant_data,
+                    &base.string_data,
+                    &mut cmd_buf_data.pending_query_resets,
+                    &pass.occlusion_query_set,
+                )?;
             }
 
             let (trackers, pending_discard_init_fixups) = state
@@ -1978,6 +1749,247 @@ impl Global {
 impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
     State<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
 {
+    fn execute_command(
+        &mut self,
+        cmd_buf: &Arc<CommandBuffer>,
+        command: ArcRenderCommand,
+        dynamic_offsets: &[DynamicOffset],
+        push_constant_data: &[u32],
+        string_data: &[u8],
+        pending_query_resets: &mut QueryResetMap,
+        occlusion_query_set: &Option<Arc<QuerySet>>,
+    ) -> Result<(), RenderPassError> {
+        match command {
+            ArcRenderCommand::SetBindGroup {
+                index,
+                num_dynamic_offsets,
+                bind_group,
+            } => {
+                let scope = PassErrorScope::SetBindGroup;
+                self.set_bind_group(
+                    cmd_buf,
+                    dynamic_offsets,
+                    index,
+                    num_dynamic_offsets,
+                    bind_group,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::SetPipeline(pipeline) => {
+                let scope = PassErrorScope::SetPipelineRender;
+                self.set_pipeline(cmd_buf, pipeline).map_pass_err(scope)?;
+            }
+            ArcRenderCommand::SetIndexBuffer {
+                buffer,
+                index_format,
+                offset,
+                size,
+            } => {
+                let scope = PassErrorScope::SetIndexBuffer;
+                self.set_index_buffer(cmd_buf, buffer, index_format, offset, size)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::SetVertexBuffer {
+                slot,
+                buffer,
+                offset,
+                size,
+            } => {
+                let scope = PassErrorScope::SetVertexBuffer;
+                self.set_vertex_buffer(cmd_buf, slot, buffer, offset, size)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::SetBlendConstant(ref color) => {
+                self.set_blend_constant(color);
+            }
+            ArcRenderCommand::SetStencilReference(value) => {
+                self.set_stencil_reference(value);
+            }
+            ArcRenderCommand::SetViewport {
+                rect,
+                depth_min,
+                depth_max,
+            } => {
+                let scope = PassErrorScope::SetViewport;
+                self.set_viewport(rect, depth_min, depth_max)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::SetPushConstant {
+                stages,
+                offset,
+                size_bytes,
+                values_offset,
+            } => {
+                let scope = PassErrorScope::SetPushConstant;
+                self.set_push_constant(
+                    push_constant_data,
+                    stages,
+                    offset,
+                    size_bytes,
+                    values_offset,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::SetScissor(rect) => {
+                let scope = PassErrorScope::SetScissorRect;
+                self.set_scissor(rect).map_pass_err(scope)?;
+            }
+            ArcRenderCommand::Draw {
+                vertex_count,
+                instance_count,
+                first_vertex,
+                first_instance,
+            } => {
+                let scope = PassErrorScope::Draw {
+                    kind: DrawKind::Draw,
+                    indexed: false,
+                };
+                self.draw(vertex_count, instance_count, first_vertex, first_instance)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::DrawIndexed {
+                index_count,
+                instance_count,
+                first_index,
+                base_vertex,
+                first_instance,
+            } => {
+                let scope = PassErrorScope::Draw {
+                    kind: DrawKind::Draw,
+                    indexed: true,
+                };
+                self.draw_indexed(
+                    index_count,
+                    instance_count,
+                    first_index,
+                    base_vertex,
+                    first_instance,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::DrawIndirect {
+                buffer,
+                offset,
+                count,
+                indexed,
+            } => {
+                let scope = PassErrorScope::Draw {
+                    kind: if count != 1 {
+                        DrawKind::MultiDrawIndirect
+                    } else {
+                        DrawKind::DrawIndirect
+                    },
+                    indexed,
+                };
+                self.multi_draw_indirect(cmd_buf, buffer, offset, count, indexed)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::MultiDrawIndirectCount {
+                buffer,
+                offset,
+                count_buffer,
+                count_buffer_offset,
+                max_count,
+                indexed,
+            } => {
+                let scope = PassErrorScope::Draw {
+                    kind: DrawKind::MultiDrawIndirectCount,
+                    indexed,
+                };
+                self.multi_draw_indirect_count(
+                    cmd_buf,
+                    buffer,
+                    offset,
+                    count_buffer,
+                    count_buffer_offset,
+                    max_count,
+                    indexed,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::PushDebugGroup { color: _, len } => {
+                self.push_debug_group(string_data, len);
+            }
+            ArcRenderCommand::PopDebugGroup => {
+                let scope = PassErrorScope::PopDebugGroup;
+                self.pop_debug_group().map_pass_err(scope)?;
+            }
+            ArcRenderCommand::InsertDebugMarker { color: _, len } => {
+                self.insert_debug_marker(string_data, len);
+            }
+            ArcRenderCommand::WriteTimestamp {
+                query_set,
+                query_index,
+            } => {
+                let scope = PassErrorScope::WriteTimestamp;
+                self.write_timestamp(cmd_buf, pending_query_resets, query_set, query_index)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::BeginOcclusionQuery { query_index } => {
+                api_log!("RenderPass::begin_occlusion_query {query_index}");
+                let scope = PassErrorScope::BeginOcclusionQuery;
+
+                let query_set = occlusion_query_set
+                    .clone()
+                    .ok_or(RenderPassErrorInner::MissingOcclusionQuerySet)
+                    .map_pass_err(scope)?;
+
+                validate_and_begin_occlusion_query(
+                    query_set,
+                    self.raw_encoder,
+                    &mut self.tracker.query_sets,
+                    query_index,
+                    Some(pending_query_resets),
+                    &mut self.active_occlusion_query,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::EndOcclusionQuery => {
+                api_log!("RenderPass::end_occlusion_query");
+                let scope = PassErrorScope::EndOcclusionQuery;
+
+                end_occlusion_query(self.raw_encoder, &mut self.active_occlusion_query)
+                    .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::BeginPipelineStatisticsQuery {
+                query_set,
+                query_index,
+            } => {
+                api_log!(
+                    "RenderPass::begin_pipeline_statistics_query {query_index} {}",
+                    query_set.error_ident()
+                );
+                let scope = PassErrorScope::BeginPipelineStatisticsQuery;
+
+                validate_and_begin_pipeline_statistics_query(
+                    query_set,
+                    self.raw_encoder,
+                    &mut self.tracker.query_sets,
+                    cmd_buf.as_ref(),
+                    query_index,
+                    Some(pending_query_resets),
+                    &mut self.active_pipeline_statistics_query,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::EndPipelineStatisticsQuery => {
+                api_log!("RenderPass::end_pipeline_statistics_query");
+                let scope = PassErrorScope::EndPipelineStatisticsQuery;
+
+                end_pipeline_statistics_query(
+                    self.raw_encoder,
+                    &mut self.active_pipeline_statistics_query,
+                )
+                .map_pass_err(scope)?;
+            }
+            ArcRenderCommand::ExecuteBundle(bundle) => {
+                let scope = PassErrorScope::ExecuteBundle;
+                self.execute_bundle(cmd_buf, bundle).map_pass_err(scope)?;
+            }
+        }
+        Ok(())
+    }
+
     fn set_bind_group(
         &mut self,
         cmd_buf: &Arc<CommandBuffer>,
@@ -2030,8 +2042,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         //Note: stateless trackers are not merged: the lifetime reference
         // is held to the bind group itself.
 
-        self
-            .buffer_memory_init_actions
+        self.buffer_memory_init_actions
             .extend(bind_group.used_buffer_ranges.iter().filter_map(|action| {
                 action
                     .buffer
@@ -2040,8 +2051,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
                     .check_action(action)
             }));
         for action in bind_group.used_texture_ranges.iter() {
-            self
-                .info
+            self.info
                 .pending_discard_init_fixups
                 .extend(self.texture_memory_actions.register_init_action(action));
         }
@@ -2082,8 +2092,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
 
         pipeline.same_device_as(cmd_buf.as_ref())?;
 
-        self
-            .info
+        self.info
             .context
             .check_compatible(&pipeline.pass_context, pipeline.as_ref())
             .map_err(RenderCommandError::IncompatiblePipelineTargets)?;
@@ -2093,12 +2102,14 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         if pipeline.flags.contains(PipelineFlags::WRITES_DEPTH) && self.info.is_depth_read_only {
             return Err(RenderCommandError::IncompatibleDepthAccess(pipeline.error_ident()).into());
         }
-        if pipeline.flags.contains(PipelineFlags::WRITES_STENCIL) && self.info.is_stencil_read_only {
-            return Err(RenderCommandError::IncompatibleStencilAccess(pipeline.error_ident()).into());
+        if pipeline.flags.contains(PipelineFlags::WRITES_STENCIL) && self.info.is_stencil_read_only
+        {
+            return Err(
+                RenderCommandError::IncompatibleStencilAccess(pipeline.error_ident()).into(),
+            );
         }
 
-        self
-            .blend_constant
+        self.blend_constant
             .require(pipeline.flags.contains(PipelineFlags::BLEND_CONSTANT));
 
         unsafe {
@@ -2107,8 +2118,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
 
         if pipeline.flags.contains(PipelineFlags::STENCIL_REFERENCE) {
             unsafe {
-                self
-                    .raw_encoder
+                self.raw_encoder
                     .set_stencil_reference(self.stencil_reference);
             }
         }
@@ -2173,8 +2183,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
     ) -> Result<(), RenderPassErrorInner> {
         api_log!("RenderPass::set_index_buffer {}", buffer.error_ident());
 
-        self
-            .info
+        self.info
             .usage_scope
             .buffers
             .merge_single(&buffer, wgt::BufferUses::INDEX)?;
@@ -2190,8 +2199,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         };
         self.index.update_buffer(offset..end, index_format);
 
-        self
-            .buffer_memory_init_actions
+        self.buffer_memory_init_actions
             .extend(buffer.initialization_status.read().create_action(
                 &buffer,
                 offset..end,
@@ -2222,8 +2230,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
             buffer.error_ident()
         );
 
-        self
-            .info
+        self.info
             .usage_scope
             .buffers
             .merge_single(&buffer, wgt::BufferUses::VERTEX)?;
@@ -2249,8 +2256,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         };
         self.vertex.buffer_sizes[slot as usize] = Some(buffer_size);
 
-        self
-            .buffer_memory_init_actions
+        self.buffer_memory_init_actions
             .extend(buffer.initialization_status.read().create_action(
                 &buffer,
                 offset..(offset + buffer_size),
@@ -2344,7 +2350,8 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         let values_offset = values_offset.ok_or(RenderPassErrorInner::InvalidValuesOffset)?;
 
         let end_offset_bytes = offset + size_bytes;
-        let values_end_offset = (values_offset + size_bytes / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
+        let values_end_offset =
+            (values_offset + size_bytes / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
         let data_slice = &push_constant_data[(values_offset as usize)..values_end_offset];
 
         let pipeline_layout = self
@@ -2358,8 +2365,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
             .map_err(RenderCommandError::from)?;
 
         unsafe {
-            self
-                .raw_encoder
+            self.raw_encoder
                 .set_push_constants(pipeline_layout.raw(), stages, offset, data_slice)
         }
         Ok(())
@@ -2390,23 +2396,22 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         first_vertex: u32,
         first_instance: u32,
     ) -> Result<(), DrawError> {
-        api_log!("RenderPass::draw {vertex_count} {instance_count} {first_vertex} {first_instance}");
+        api_log!(
+            "RenderPass::draw {vertex_count} {instance_count} {first_vertex} {first_instance}"
+        );
 
         self.is_ready(false)?;
 
-        self
-            .vertex
+        self.vertex
             .limits
             .validate_vertex_limit(first_vertex, vertex_count)?;
-        self
-            .vertex
+        self.vertex
             .limits
             .validate_instance_limit(first_instance, instance_count)?;
 
         unsafe {
             if instance_count > 0 && vertex_count > 0 {
-                self
-                    .raw_encoder
+                self.raw_encoder
                     .draw(first_vertex, vertex_count, first_instance, instance_count);
             }
         }
@@ -2433,8 +2438,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
                 index_limit,
             });
         }
-        self
-            .vertex
+        self.vertex
             .limits
             .validate_instance_limit(first_instance, instance_count)?;
 
@@ -2473,18 +2477,15 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         };
 
         if count != 1 {
-            self
-                .device
+            self.device
                 .require_features(wgt::Features::MULTI_DRAW_INDIRECT)?;
         }
-        self
-            .device
+        self.device
             .require_downlevel_flags(wgt::DownlevelFlags::INDIRECT_EXECUTION)?;
 
         indirect_buffer.same_device_as(cmd_buf.as_ref())?;
 
-        self
-            .info
+        self.info
             .usage_scope
             .buffers
             .merge_single(&indirect_buffer, wgt::BufferUses::INDIRECT)?;
@@ -2519,8 +2520,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
                 self.raw_encoder.draw_indirect(indirect_raw, offset, count);
             },
             true => unsafe {
-                self
-                    .raw_encoder
+                self.raw_encoder
                     .draw_indexed_indirect(indirect_raw, offset, count);
             },
         }
@@ -2550,18 +2550,15 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
             true => size_of::<wgt::DrawIndexedIndirectArgs>(),
         } as u64;
 
-        self
-            .device
+        self.device
             .require_features(wgt::Features::MULTI_DRAW_INDIRECT_COUNT)?;
-        self
-            .device
+        self.device
             .require_downlevel_flags(wgt::DownlevelFlags::INDIRECT_EXECUTION)?;
 
         indirect_buffer.same_device_as(cmd_buf.as_ref())?;
         count_buffer.same_device_as(cmd_buf.as_ref())?;
 
-        self
-            .info
+        self.info
             .usage_scope
             .buffers
             .merge_single(&indirect_buffer, wgt::BufferUses::INDIRECT)?;
@@ -2569,8 +2566,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
         indirect_buffer.check_usage(BufferUsages::INDIRECT)?;
         let indirect_raw = indirect_buffer.try_raw(self.snatch_guard)?;
 
-        self
-            .info
+        self.info
             .usage_scope
             .buffers
             .merge_single(&count_buffer, wgt::BufferUses::INDIRECT)?;
@@ -2706,8 +2702,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
 
         query_set.same_device_as(cmd_buf)?;
 
-        self
-            .device
+        self.device
             .require_features(wgt::Features::TIMESTAMP_QUERY_INSIDE_PASSES)?;
 
         let query_set = self.tracker.query_sets.insert_single(query_set);
@@ -2731,8 +2726,7 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
 
         bundle.same_device_as(cmd_buf.as_ref())?;
 
-        self
-            .info
+        self.info
             .context
             .check_compatible(&bundle.context, bundle.as_ref())
             .map_err(RenderPassErrorInner::IncompatibleBundleTargets)?;
@@ -2750,23 +2744,20 @@ impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
             );
         }
 
-        self
-            .buffer_memory_init_actions
-            .extend(
-                bundle
-                    .buffer_memory_init_actions
-                    .iter()
-                    .filter_map(|action| {
-                        action
-                            .buffer
-                            .initialization_status
-                            .read()
-                            .check_action(action)
-                    }),
-            );
+        self.buffer_memory_init_actions.extend(
+            bundle
+                .buffer_memory_init_actions
+                .iter()
+                .filter_map(|action| {
+                    action
+                        .buffer
+                        .initialization_status
+                        .read()
+                        .check_action(action)
+                }),
+        );
         for action in bundle.texture_memory_init_actions.iter() {
-            self
-                .info
+            self.info
                 .pending_discard_init_fixups
                 .extend(self.texture_memory_actions.register_init_action(action));
         }
