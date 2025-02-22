@@ -504,19 +504,19 @@ impl Global {
                     bind_group,
                 } => {
                     let scope = PassErrorScope::SetBindGroup;
-                    set_bind_group(
-                        &mut state,
-                        cmd_buf,
-                        &base.dynamic_offsets,
-                        index,
-                        num_dynamic_offsets,
-                        bind_group,
-                    )
-                    .map_pass_err(scope)?;
+                    state
+                        .set_bind_group(
+                            cmd_buf,
+                            &base.dynamic_offsets,
+                            index,
+                            num_dynamic_offsets,
+                            bind_group,
+                        )
+                        .map_pass_err(scope)?;
                 }
                 ArcComputeCommand::SetPipeline(pipeline) => {
                     let scope = PassErrorScope::SetPipelineCompute;
-                    set_pipeline(&mut state, cmd_buf, pipeline).map_pass_err(scope)?;
+                    state.set_pipeline(cmd_buf, pipeline).map_pass_err(scope)?;
                 }
                 ArcComputeCommand::SetPushConstant {
                     offset,
@@ -524,39 +524,42 @@ impl Global {
                     values_offset,
                 } => {
                     let scope = PassErrorScope::SetPushConstant;
-                    set_push_constant(
-                        &mut state,
-                        &base.push_constant_data,
-                        offset,
-                        size_bytes,
-                        values_offset,
-                    )
-                    .map_pass_err(scope)?;
+                    state
+                        .set_push_constant(
+                            &base.push_constant_data,
+                            offset,
+                            size_bytes,
+                            values_offset,
+                        )
+                        .map_pass_err(scope)?;
                 }
                 ArcComputeCommand::Dispatch(groups) => {
                     let scope = PassErrorScope::Dispatch { indirect: false };
-                    dispatch(&mut state, groups).map_pass_err(scope)?;
+                    state.dispatch(groups).map_pass_err(scope)?;
                 }
                 ArcComputeCommand::DispatchIndirect { buffer, offset } => {
                     let scope = PassErrorScope::Dispatch { indirect: true };
-                    dispatch_indirect(&mut state, cmd_buf, buffer, offset).map_pass_err(scope)?;
+                    state
+                        .dispatch_indirect(cmd_buf, buffer, offset)
+                        .map_pass_err(scope)?;
                 }
                 ArcComputeCommand::PushDebugGroup { color: _, len } => {
-                    push_debug_group(&mut state, &base.string_data, len);
+                    state.push_debug_group(&base.string_data, len);
                 }
                 ArcComputeCommand::PopDebugGroup => {
                     let scope = PassErrorScope::PopDebugGroup;
-                    pop_debug_group(&mut state).map_pass_err(scope)?;
+                    state.pop_debug_group().map_pass_err(scope)?;
                 }
                 ArcComputeCommand::InsertDebugMarker { color: _, len } => {
-                    insert_debug_marker(&mut state, &base.string_data, len);
+                    state.insert_debug_marker(&base.string_data, len);
                 }
                 ArcComputeCommand::WriteTimestamp {
                     query_set,
                     query_index,
                 } => {
                     let scope = PassErrorScope::WriteTimestamp;
-                    write_timestamp(&mut state, cmd_buf, query_set, query_index)
+                    state
+                        .write_timestamp(cmd_buf, query_set, query_index)
                         .map_pass_err(scope)?;
                 }
                 ArcComputeCommand::BeginPipelineStatisticsQuery {
@@ -625,126 +628,82 @@ impl Global {
     }
 }
 
-fn set_bind_group(
-    state: &mut State,
-    cmd_buf: &CommandBuffer,
-    dynamic_offsets: &[DynamicOffset],
-    index: u32,
-    num_dynamic_offsets: usize,
-    bind_group: Option<Arc<BindGroup>>,
-) -> Result<(), ComputePassErrorInner> {
-    let max_bind_groups = state.device.limits.max_bind_groups;
-    if index >= max_bind_groups {
-        return Err(ComputePassErrorInner::BindGroupIndexOutOfRange {
-            index,
-            max: max_bind_groups,
-        });
-    }
-
-    state.temp_offsets.clear();
-    state.temp_offsets.extend_from_slice(
-        &dynamic_offsets
-            [state.dynamic_offset_count..state.dynamic_offset_count + num_dynamic_offsets],
-    );
-    state.dynamic_offset_count += num_dynamic_offsets;
-
-    if bind_group.is_none() {
-        // TODO: Handle bind_group None.
-        return Ok(());
-    }
-
-    let bind_group = bind_group.unwrap();
-    let bind_group = state.tracker.bind_groups.insert_single(bind_group);
-
-    bind_group.same_device_as(cmd_buf)?;
-
-    bind_group.validate_dynamic_bindings(index, &state.temp_offsets)?;
-
-    state
-        .buffer_memory_init_actions
-        .extend(bind_group.used_buffer_ranges.iter().filter_map(|action| {
-            action
-                .buffer
-                .initialization_status
-                .read()
-                .check_action(action)
-        }));
-
-    for action in bind_group.used_texture_ranges.iter() {
-        state
-            .pending_discard_init_fixups
-            .extend(state.texture_memory_actions.register_init_action(action));
-    }
-
-    let used_resource = bind_group
-        .used
-        .acceleration_structures
-        .into_iter()
-        .map(|tlas| TlasAction {
-            tlas: tlas.clone(),
-            kind: crate::ray_tracing::TlasActionKind::Use,
-        });
-
-    state.tlas_actions.extend(used_resource);
-
-    let pipeline_layout = state.binder.pipeline_layout.clone();
-    let entries = state
-        .binder
-        .assign_group(index as usize, bind_group, &state.temp_offsets);
-    if !entries.is_empty() && pipeline_layout.is_some() {
-        let pipeline_layout = pipeline_layout.as_ref().unwrap().raw();
-        for (i, e) in entries.iter().enumerate() {
-            if let Some(group) = e.group.as_ref() {
-                let raw_bg = group.try_raw(&state.snatch_guard)?;
-                unsafe {
-                    state.raw_encoder.set_bind_group(
-                        pipeline_layout,
-                        index + i as u32,
-                        Some(raw_bg),
-                        &e.dynamic_offsets,
-                    );
-                }
-            }
+impl<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
+    State<'scope, 'snatch_guard, 'cmd_buf, 'raw_encoder>
+{
+    fn set_bind_group(
+        &mut self,
+        cmd_buf: &CommandBuffer,
+        dynamic_offsets: &[DynamicOffset],
+        index: u32,
+        num_dynamic_offsets: usize,
+        bind_group: Option<Arc<BindGroup>>,
+    ) -> Result<(), ComputePassErrorInner> {
+        let max_bind_groups = self.device.limits.max_bind_groups;
+        if index >= max_bind_groups {
+            return Err(ComputePassErrorInner::BindGroupIndexOutOfRange {
+                index,
+                max: max_bind_groups,
+            });
         }
-    }
-    Ok(())
-}
 
-fn set_pipeline(
-    state: &mut State,
-    cmd_buf: &CommandBuffer,
-    pipeline: Arc<ComputePipeline>,
-) -> Result<(), ComputePassErrorInner> {
-    pipeline.same_device_as(cmd_buf)?;
+        self.temp_offsets.clear();
+        self.temp_offsets.extend_from_slice(
+            &dynamic_offsets
+                [self.dynamic_offset_count..self.dynamic_offset_count + num_dynamic_offsets],
+        );
+        self.dynamic_offset_count += num_dynamic_offsets;
 
-    state.pipeline = Some(pipeline.clone());
+        if bind_group.is_none() {
+            // TODO: Handle bind_group None.
+            return Ok(());
+        }
 
-    let pipeline = state.tracker.compute_pipelines.insert_single(pipeline);
+        let bind_group = bind_group.unwrap();
+        let bind_group = self.tracker.bind_groups.insert_single(bind_group);
 
-    unsafe {
-        state.raw_encoder.set_compute_pipeline(pipeline.raw());
-    }
+        bind_group.same_device_as(cmd_buf)?;
 
-    // Rebind resources
-    if state.binder.pipeline_layout.is_none()
-        || !state
+        bind_group.validate_dynamic_bindings(index, &self.temp_offsets)?;
+
+        self.buffer_memory_init_actions
+            .extend(bind_group.used_buffer_ranges.iter().filter_map(|action| {
+                action
+                    .buffer
+                    .initialization_status
+                    .read()
+                    .check_action(action)
+            }));
+
+        for action in bind_group.used_texture_ranges.iter() {
+            self.pending_discard_init_fixups
+                .extend(self.texture_memory_actions.register_init_action(action));
+        }
+
+        let used_resource = bind_group
+            .used
+            .acceleration_structures
+            .into_iter()
+            .map(|tlas| TlasAction {
+                tlas: tlas.clone(),
+                kind: crate::ray_tracing::TlasActionKind::Use,
+            });
+
+        self.tlas_actions.extend(used_resource);
+
+        let pipeline_layout = self.binder.pipeline_layout.clone();
+        let entries = self
             .binder
-            .pipeline_layout
-            .as_ref()
-            .unwrap()
-            .is_equal(&pipeline.layout)
-    {
-        let (start_index, entries) = state
-            .binder
-            .change_pipeline_layout(&pipeline.layout, &pipeline.late_sized_buffer_groups);
-        if !entries.is_empty() {
+            .assign_group(index as usize, bind_group, &self.temp_offsets);
+        if !entries.is_empty() && pipeline_layout.is_some() {
+            let pipeline_layout = pipeline_layout.as_ref().unwrap().raw();
             for (i, e) in entries.iter().enumerate() {
                 if let Some(group) = e.group.as_ref() {
-                    let raw_bg = group.try_raw(&state.snatch_guard)?;
+                    let raw_bg = group.try_raw(&self.snatch_guard)?;
                     unsafe {
-                        state.raw_encoder.set_bind_group(
-                            pipeline.layout.raw(),
-                            start_index as u32 + i as u32,
+                        self.raw_encoder.set_bind_group(
+                            pipeline_layout,
+                            index + i as u32,
                             Some(raw_bg),
                             &e.dynamic_offsets,
                         );
@@ -752,342 +711,385 @@ fn set_pipeline(
                 }
             }
         }
+        Ok(())
+    }
 
-        // TODO: integrate this in the code below once we simplify push constants
-        state.push_constants.clear();
-        // Note that can only be one range for each stage. See the `MoreThanOnePushConstantRangePerStage` error.
-        if let Some(push_constant_range) =
-            pipeline.layout.push_constant_ranges.iter().find_map(|pcr| {
-                pcr.stages
-                    .contains(wgt::ShaderStages::COMPUTE)
-                    .then_some(pcr.range.clone())
-            })
+    fn set_pipeline(
+        &mut self,
+        cmd_buf: &CommandBuffer,
+        pipeline: Arc<ComputePipeline>,
+    ) -> Result<(), ComputePassErrorInner> {
+        pipeline.same_device_as(cmd_buf)?;
+
+        self.pipeline = Some(pipeline.clone());
+
+        let pipeline = self.tracker.compute_pipelines.insert_single(pipeline);
+
+        unsafe {
+            self.raw_encoder.set_compute_pipeline(pipeline.raw());
+        }
+
+        // Rebind resources
+        if self.binder.pipeline_layout.is_none()
+            || !self
+                .binder
+                .pipeline_layout
+                .as_ref()
+                .unwrap()
+                .is_equal(&pipeline.layout)
         {
-            // Note that non-0 range start doesn't work anyway https://github.com/gfx-rs/wgpu/issues/4502
-            let len = push_constant_range.len() / wgt::PUSH_CONSTANT_ALIGNMENT as usize;
-            state.push_constants.extend(core::iter::repeat(0).take(len));
-        }
-
-        // Clear push constant ranges
-        let non_overlapping =
-            super::bind::compute_nonoverlapping_ranges(&pipeline.layout.push_constant_ranges);
-        for range in non_overlapping {
-            let offset = range.range.start;
-            let size_bytes = range.range.end - offset;
-            super::push_constant_clear(offset, size_bytes, |clear_offset, clear_data| unsafe {
-                state.raw_encoder.set_push_constants(
-                    pipeline.layout.raw(),
-                    wgt::ShaderStages::COMPUTE,
-                    clear_offset,
-                    clear_data,
-                );
-            });
-        }
-    }
-    Ok(())
-}
-
-fn set_push_constant(
-    state: &mut State,
-    push_constant_data: &[u32],
-    offset: u32,
-    size_bytes: u32,
-    values_offset: u32,
-) -> Result<(), ComputePassErrorInner> {
-    let end_offset_bytes = offset + size_bytes;
-    let values_end_offset = (values_offset + size_bytes / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
-    let data_slice = &push_constant_data[(values_offset as usize)..values_end_offset];
-
-    let pipeline_layout = state
-        .binder
-        .pipeline_layout
-        .as_ref()
-        // TODO: don't error here, lazily update the push constants using `state.push_constants`
-        .ok_or(ComputePassErrorInner::Dispatch(
-            DispatchError::MissingPipeline,
-        ))?;
-
-    pipeline_layout.validate_push_constant_ranges(
-        wgt::ShaderStages::COMPUTE,
-        offset,
-        end_offset_bytes,
-    )?;
-
-    let offset_in_elements = (offset / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
-    let size_in_elements = (size_bytes / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
-    state.push_constants[offset_in_elements..][..size_in_elements].copy_from_slice(data_slice);
-
-    unsafe {
-        state.raw_encoder.set_push_constants(
-            pipeline_layout.raw(),
-            wgt::ShaderStages::COMPUTE,
-            offset,
-            data_slice,
-        );
-    }
-    Ok(())
-}
-
-fn dispatch(state: &mut State, groups: [u32; 3]) -> Result<(), ComputePassErrorInner> {
-    state.is_ready()?;
-
-    state.flush_states(None)?;
-
-    let groups_size_limit = state.device.limits.max_compute_workgroups_per_dimension;
-
-    if groups[0] > groups_size_limit
-        || groups[1] > groups_size_limit
-        || groups[2] > groups_size_limit
-    {
-        return Err(ComputePassErrorInner::Dispatch(
-            DispatchError::InvalidGroupSize {
-                current: groups,
-                limit: groups_size_limit,
-            },
-        ));
-    }
-
-    unsafe {
-        state.raw_encoder.dispatch(groups);
-    }
-    Ok(())
-}
-
-fn dispatch_indirect(
-    state: &mut State,
-    cmd_buf: &CommandBuffer,
-    buffer: Arc<Buffer>,
-    offset: u64,
-) -> Result<(), ComputePassErrorInner> {
-    buffer.same_device_as(cmd_buf)?;
-
-    state.is_ready()?;
-
-    state
-        .device
-        .require_downlevel_flags(wgt::DownlevelFlags::INDIRECT_EXECUTION)?;
-
-    buffer.check_usage(wgt::BufferUsages::INDIRECT)?;
-
-    if offset % 4 != 0 {
-        return Err(ComputePassErrorInner::UnalignedIndirectBufferOffset(offset));
-    }
-
-    let end_offset = offset + size_of::<wgt::DispatchIndirectArgs>() as u64;
-    if end_offset > buffer.size {
-        return Err(ComputePassErrorInner::IndirectBufferOverrun {
-            offset,
-            end_offset,
-            buffer_size: buffer.size,
-        });
-    }
-
-    let stride = 3 * 4; // 3 integers, x/y/z group size
-    state
-        .buffer_memory_init_actions
-        .extend(buffer.initialization_status.read().create_action(
-            &buffer,
-            offset..(offset + stride),
-            MemoryInitKind::NeedsInitializedMemory,
-        ));
-
-    #[cfg(feature = "indirect-validation")]
-    {
-        let params = state.device.indirect_validation.as_ref().unwrap().params(
-            &state.device.limits,
-            offset,
-            buffer.size,
-        );
-
-        unsafe {
-            state.raw_encoder.set_compute_pipeline(params.pipeline);
-        }
-
-        unsafe {
-            state.raw_encoder.set_push_constants(
-                params.pipeline_layout,
-                wgt::ShaderStages::COMPUTE,
-                0,
-                &[params.offset_remainder as u32 / 4],
-            );
-        }
-
-        unsafe {
-            state.raw_encoder.set_bind_group(
-                params.pipeline_layout,
-                0,
-                Some(params.dst_bind_group),
-                &[],
-            );
-        }
-        unsafe {
-            state.raw_encoder.set_bind_group(
-                params.pipeline_layout,
-                1,
-                Some(
-                    buffer
-                        .raw_indirect_validation_bind_group
-                        .get(&state.snatch_guard)
-                        .unwrap()
-                        .as_ref(),
-                ),
-                &[params.aligned_offset as u32],
-            );
-        }
-
-        let src_transition = state
-            .intermediate_trackers
-            .buffers
-            .set_single(&buffer, wgt::BufferUses::STORAGE_READ_ONLY);
-        let src_barrier =
-            src_transition.map(|transition| transition.into_hal(&buffer, &state.snatch_guard));
-        unsafe {
-            state.raw_encoder.transition_buffers(src_barrier.as_slice());
-        }
-
-        unsafe {
-            state.raw_encoder.transition_buffers(&[hal::BufferBarrier {
-                buffer: params.dst_buffer,
-                usage: hal::StateTransition {
-                    from: wgt::BufferUses::INDIRECT,
-                    to: wgt::BufferUses::STORAGE_READ_WRITE,
-                },
-            }]);
-        }
-
-        unsafe {
-            state.raw_encoder.dispatch([1, 1, 1]);
-        }
-
-        // reset state
-        {
-            let pipeline = state.pipeline.as_ref().unwrap();
-
-            unsafe {
-                state.raw_encoder.set_compute_pipeline(pipeline.raw());
+            let (start_index, entries) = self
+                .binder
+                .change_pipeline_layout(&pipeline.layout, &pipeline.late_sized_buffer_groups);
+            if !entries.is_empty() {
+                for (i, e) in entries.iter().enumerate() {
+                    if let Some(group) = e.group.as_ref() {
+                        let raw_bg = group.try_raw(&self.snatch_guard)?;
+                        unsafe {
+                            self.raw_encoder.set_bind_group(
+                                pipeline.layout.raw(),
+                                start_index as u32 + i as u32,
+                                Some(raw_bg),
+                                &e.dynamic_offsets,
+                            );
+                        }
+                    }
+                }
             }
 
-            if !state.push_constants.is_empty() {
-                unsafe {
-                    state.raw_encoder.set_push_constants(
+            // TODO: integrate this in the code below once we simplify push constants
+            self.push_constants.clear();
+            // Note that can only be one range for each stage. See the `MoreThanOnePushConstantRangePerStage` error.
+            if let Some(push_constant_range) =
+                pipeline.layout.push_constant_ranges.iter().find_map(|pcr| {
+                    pcr.stages
+                        .contains(wgt::ShaderStages::COMPUTE)
+                        .then_some(pcr.range.clone())
+                })
+            {
+                // Note that non-0 range start doesn't work anyway https://github.com/gfx-rs/wgpu/issues/4502
+                let len = push_constant_range.len() / wgt::PUSH_CONSTANT_ALIGNMENT as usize;
+                self.push_constants.extend(core::iter::repeat(0).take(len));
+            }
+
+            // Clear push constant ranges
+            let non_overlapping =
+                super::bind::compute_nonoverlapping_ranges(&pipeline.layout.push_constant_ranges);
+            for range in non_overlapping {
+                let offset = range.range.start;
+                let size_bytes = range.range.end - offset;
+                super::push_constant_clear(offset, size_bytes, |clear_offset, clear_data| unsafe {
+                    self.raw_encoder.set_push_constants(
                         pipeline.layout.raw(),
                         wgt::ShaderStages::COMPUTE,
-                        0,
-                        &state.push_constants,
+                        clear_offset,
+                        clear_data,
                     );
-                }
-            }
-
-            for (i, e) in state.binder.list_valid() {
-                let group = e.group.as_ref().unwrap();
-                let raw_bg = group.try_raw(&state.snatch_guard)?;
-                unsafe {
-                    state.raw_encoder.set_bind_group(
-                        pipeline.layout.raw(),
-                        i as u32,
-                        Some(raw_bg),
-                        &e.dynamic_offsets,
-                    );
-                }
+                });
             }
         }
+        Ok(())
+    }
+
+    fn set_push_constant(
+        &mut self,
+        push_constant_data: &[u32],
+        offset: u32,
+        size_bytes: u32,
+        values_offset: u32,
+    ) -> Result<(), ComputePassErrorInner> {
+        let end_offset_bytes = offset + size_bytes;
+        let values_end_offset =
+            (values_offset + size_bytes / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
+        let data_slice = &push_constant_data[(values_offset as usize)..values_end_offset];
+
+        let pipeline_layout = self
+            .binder
+            .pipeline_layout
+            .as_ref()
+            // TODO: don't error here, lazily update the push constants using `self.push_constants`
+            .ok_or(ComputePassErrorInner::Dispatch(
+                DispatchError::MissingPipeline,
+            ))?;
+
+        pipeline_layout.validate_push_constant_ranges(
+            wgt::ShaderStages::COMPUTE,
+            offset,
+            end_offset_bytes,
+        )?;
+
+        let offset_in_elements = (offset / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
+        let size_in_elements = (size_bytes / wgt::PUSH_CONSTANT_ALIGNMENT) as usize;
+        self.push_constants[offset_in_elements..][..size_in_elements].copy_from_slice(data_slice);
 
         unsafe {
-            state.raw_encoder.transition_buffers(&[hal::BufferBarrier {
-                buffer: params.dst_buffer,
-                usage: hal::StateTransition {
-                    from: wgt::BufferUses::STORAGE_READ_WRITE,
-                    to: wgt::BufferUses::INDIRECT,
+            self.raw_encoder.set_push_constants(
+                pipeline_layout.raw(),
+                wgt::ShaderStages::COMPUTE,
+                offset,
+                data_slice,
+            );
+        }
+        Ok(())
+    }
+
+    fn dispatch(&mut self, groups: [u32; 3]) -> Result<(), ComputePassErrorInner> {
+        self.is_ready()?;
+
+        self.flush_states(None)?;
+
+        let groups_size_limit = self.device.limits.max_compute_workgroups_per_dimension;
+
+        if groups[0] > groups_size_limit
+            || groups[1] > groups_size_limit
+            || groups[2] > groups_size_limit
+        {
+            return Err(ComputePassErrorInner::Dispatch(
+                DispatchError::InvalidGroupSize {
+                    current: groups,
+                    limit: groups_size_limit,
                 },
-            }]);
+            ));
         }
 
-        state.flush_states(None)?;
         unsafe {
-            state.raw_encoder.dispatch_indirect(params.dst_buffer, 0);
+            self.raw_encoder.dispatch(groups);
         }
-    };
-    #[cfg(not(feature = "indirect-validation"))]
-    {
-        state
-            .scope
-            .buffers
-            .merge_single(&buffer, wgt::BufferUses::INDIRECT)?;
+        Ok(())
+    }
 
-        use crate::resource::Trackable;
-        state.flush_states(Some(buffer.tracker_index()))?;
+    fn dispatch_indirect(
+        &mut self,
+        cmd_buf: &CommandBuffer,
+        buffer: Arc<Buffer>,
+        offset: u64,
+    ) -> Result<(), ComputePassErrorInner> {
+        buffer.same_device_as(cmd_buf)?;
 
-        let buf_raw = buffer.try_raw(&state.snatch_guard)?;
-        unsafe {
-            state.raw_encoder.dispatch_indirect(buf_raw, offset);
+        self.is_ready()?;
+
+        self.device
+            .require_downlevel_flags(wgt::DownlevelFlags::INDIRECT_EXECUTION)?;
+
+        buffer.check_usage(wgt::BufferUsages::INDIRECT)?;
+
+        if offset % 4 != 0 {
+            return Err(ComputePassErrorInner::UnalignedIndirectBufferOffset(offset));
         }
-    }
 
-    Ok(())
-}
-
-fn push_debug_group(state: &mut State, string_data: &[u8], len: usize) {
-    state.debug_scope_depth += 1;
-    if !state
-        .device
-        .instance_flags
-        .contains(wgt::InstanceFlags::DISCARD_HAL_LABELS)
-    {
-        let label =
-            str::from_utf8(&string_data[state.string_offset..state.string_offset + len]).unwrap();
-        unsafe {
-            state.raw_encoder.begin_debug_marker(label);
+        let end_offset = offset + size_of::<wgt::DispatchIndirectArgs>() as u64;
+        if end_offset > buffer.size {
+            return Err(ComputePassErrorInner::IndirectBufferOverrun {
+                offset,
+                end_offset,
+                buffer_size: buffer.size,
+            });
         }
-    }
-    state.string_offset += len;
-}
 
-fn pop_debug_group(state: &mut State) -> Result<(), ComputePassErrorInner> {
-    if state.debug_scope_depth == 0 {
-        return Err(ComputePassErrorInner::InvalidPopDebugGroup);
-    }
-    state.debug_scope_depth -= 1;
-    if !state
-        .device
-        .instance_flags
-        .contains(wgt::InstanceFlags::DISCARD_HAL_LABELS)
-    {
-        unsafe {
-            state.raw_encoder.end_debug_marker();
+        let stride = 3 * 4; // 3 integers, x/y/z group size
+        self.buffer_memory_init_actions
+            .extend(buffer.initialization_status.read().create_action(
+                &buffer,
+                offset..(offset + stride),
+                MemoryInitKind::NeedsInitializedMemory,
+            ));
+
+        #[cfg(feature = "indirect-validation")]
+        {
+            let params = self.device.indirect_validation.as_ref().unwrap().params(
+                &self.device.limits,
+                offset,
+                buffer.size,
+            );
+
+            unsafe {
+                self.raw_encoder.set_compute_pipeline(params.pipeline);
+            }
+
+            unsafe {
+                self.raw_encoder.set_push_constants(
+                    params.pipeline_layout,
+                    wgt::ShaderStages::COMPUTE,
+                    0,
+                    &[params.offset_remainder as u32 / 4],
+                );
+            }
+
+            unsafe {
+                self.raw_encoder.set_bind_group(
+                    params.pipeline_layout,
+                    0,
+                    Some(params.dst_bind_group),
+                    &[],
+                );
+            }
+            unsafe {
+                self.raw_encoder.set_bind_group(
+                    params.pipeline_layout,
+                    1,
+                    Some(
+                        buffer
+                            .raw_indirect_validation_bind_group
+                            .get(&self.snatch_guard)
+                            .unwrap()
+                            .as_ref(),
+                    ),
+                    &[params.aligned_offset as u32],
+                );
+            }
+
+            let src_transition = self
+                .intermediate_trackers
+                .buffers
+                .set_single(&buffer, wgt::BufferUses::STORAGE_READ_ONLY);
+            let src_barrier =
+                src_transition.map(|transition| transition.into_hal(&buffer, &self.snatch_guard));
+            unsafe {
+                self.raw_encoder.transition_buffers(src_barrier.as_slice());
+            }
+
+            unsafe {
+                self.raw_encoder.transition_buffers(&[hal::BufferBarrier {
+                    buffer: params.dst_buffer,
+                    usage: hal::StateTransition {
+                        from: wgt::BufferUses::INDIRECT,
+                        to: wgt::BufferUses::STORAGE_READ_WRITE,
+                    },
+                }]);
+            }
+
+            unsafe {
+                self.raw_encoder.dispatch([1, 1, 1]);
+            }
+
+            // reset state
+            {
+                let pipeline = self.pipeline.as_ref().unwrap();
+
+                unsafe {
+                    self.raw_encoder.set_compute_pipeline(pipeline.raw());
+                }
+
+                if !self.push_constants.is_empty() {
+                    unsafe {
+                        self.raw_encoder.set_push_constants(
+                            pipeline.layout.raw(),
+                            wgt::ShaderStages::COMPUTE,
+                            0,
+                            &self.push_constants,
+                        );
+                    }
+                }
+
+                for (i, e) in self.binder.list_valid() {
+                    let group = e.group.as_ref().unwrap();
+                    let raw_bg = group.try_raw(&self.snatch_guard)?;
+                    unsafe {
+                        self.raw_encoder.set_bind_group(
+                            pipeline.layout.raw(),
+                            i as u32,
+                            Some(raw_bg),
+                            &e.dynamic_offsets,
+                        );
+                    }
+                }
+            }
+
+            unsafe {
+                self.raw_encoder.transition_buffers(&[hal::BufferBarrier {
+                    buffer: params.dst_buffer,
+                    usage: hal::StateTransition {
+                        from: wgt::BufferUses::STORAGE_READ_WRITE,
+                        to: wgt::BufferUses::INDIRECT,
+                    },
+                }]);
+            }
+
+            self.flush_states(None)?;
+            unsafe {
+                self.raw_encoder.dispatch_indirect(params.dst_buffer, 0);
+            }
+        };
+        #[cfg(not(feature = "indirect-validation"))]
+        {
+            self.scope
+                .buffers
+                .merge_single(&buffer, wgt::BufferUses::INDIRECT)?;
+
+            use crate::resource::Trackable;
+            self.flush_states(Some(buffer.tracker_index()))?;
+
+            let buf_raw = buffer.try_raw(&self.snatch_guard)?;
+            unsafe {
+                self.raw_encoder.dispatch_indirect(buf_raw, offset);
+            }
         }
+
+        Ok(())
     }
-    Ok(())
-}
 
-fn insert_debug_marker(state: &mut State, string_data: &[u8], len: usize) {
-    if !state
-        .device
-        .instance_flags
-        .contains(wgt::InstanceFlags::DISCARD_HAL_LABELS)
-    {
-        let label =
-            str::from_utf8(&string_data[state.string_offset..state.string_offset + len]).unwrap();
-        unsafe { state.raw_encoder.insert_debug_marker(label) }
+    fn push_debug_group(&mut self, string_data: &[u8], len: usize) {
+        self.debug_scope_depth += 1;
+        if !self
+            .device
+            .instance_flags
+            .contains(wgt::InstanceFlags::DISCARD_HAL_LABELS)
+        {
+            let label =
+                str::from_utf8(&string_data[self.string_offset..self.string_offset + len]).unwrap();
+            unsafe {
+                self.raw_encoder.begin_debug_marker(label);
+            }
+        }
+        self.string_offset += len;
     }
-    state.string_offset += len;
-}
 
-fn write_timestamp(
-    state: &mut State,
-    cmd_buf: &CommandBuffer,
-    query_set: Arc<resource::QuerySet>,
-    query_index: u32,
-) -> Result<(), ComputePassErrorInner> {
-    query_set.same_device_as(cmd_buf)?;
+    fn pop_debug_group(&mut self) -> Result<(), ComputePassErrorInner> {
+        if self.debug_scope_depth == 0 {
+            return Err(ComputePassErrorInner::InvalidPopDebugGroup);
+        }
+        self.debug_scope_depth -= 1;
+        if !self
+            .device
+            .instance_flags
+            .contains(wgt::InstanceFlags::DISCARD_HAL_LABELS)
+        {
+            unsafe {
+                self.raw_encoder.end_debug_marker();
+            }
+        }
+        Ok(())
+    }
 
-    state
-        .device
-        .require_features(wgt::Features::TIMESTAMP_QUERY_INSIDE_PASSES)?;
+    fn insert_debug_marker(&mut self, string_data: &[u8], len: usize) {
+        if !self
+            .device
+            .instance_flags
+            .contains(wgt::InstanceFlags::DISCARD_HAL_LABELS)
+        {
+            let label =
+                str::from_utf8(&string_data[self.string_offset..self.string_offset + len]).unwrap();
+            unsafe { self.raw_encoder.insert_debug_marker(label) }
+        }
+        self.string_offset += len;
+    }
 
-    let query_set = state.tracker.query_sets.insert_single(query_set);
+    fn write_timestamp(
+        &mut self,
+        cmd_buf: &CommandBuffer,
+        query_set: Arc<resource::QuerySet>,
+        query_index: u32,
+    ) -> Result<(), ComputePassErrorInner> {
+        query_set.same_device_as(cmd_buf)?;
 
-    query_set.validate_and_write_timestamp(state.raw_encoder, query_index, None)?;
-    Ok(())
+        self.device
+            .require_features(wgt::Features::TIMESTAMP_QUERY_INSIDE_PASSES)?;
+
+        let query_set = self.tracker.query_sets.insert_single(query_set);
+
+        query_set.validate_and_write_timestamp(self.raw_encoder, query_index, None)?;
+        Ok(())
+    }
 }
 
 // Recording a compute pass.
